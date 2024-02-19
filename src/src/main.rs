@@ -67,8 +67,7 @@ struct ArticleAattachment {
     pub status: String,
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn read_from_web() -> anyhow::Result<(Vec<String>, Vec<ArticleDataResponse>)> {
     let categories_url = "https://static.dnf-universe.com/categories.json";
     let categories = get_category_response(categories_url).await.unwrap();
 
@@ -76,6 +75,45 @@ async fn main() -> anyhow::Result<()> {
     let mut ko_articles = vec![];
 
     iterate_children(&categories.data, &mut category_names, &mut ko_articles).await?;
+
+    Ok((category_names, ko_articles))
+}
+
+async fn post_process(
+    ko_articles: &Vec<ArticleDataResponse>,
+    category_names: &Vec<String>,
+) -> anyhow::Result<()> {
+    // Post processing
+    let ko_articles_body = ko_articles
+        .iter()
+        .map(|article| {
+            format!(
+                "[{}] - [{}]",
+                article.titles[&LangEnum::KR],
+                article.contents[&LangEnum::KR]
+            )
+        })
+        .collect::<Vec<_>>();
+
+    let category_names_body = category_names.join("\n");
+    let ko_articles_body = ko_articles_body.join("\n");
+
+    let final_dir = Path::new("crawled_data").join("final");
+    std::fs::create_dir_all(final_dir.clone()).unwrap();
+
+    let mut category_names_file = File::create(final_dir.join("category_names.txt"))?;
+    let mut all_articles_file = File::create(final_dir.join("all_articles.txt"))?;
+
+    category_names_file.write(category_names_body.as_bytes())?;
+    all_articles_file.write(ko_articles_body.as_bytes())?;
+
+    Ok(())
+}
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let (category_names, ko_articles) = read_from_web().await?;
+    post_process(&ko_articles, &category_names).await?;
 
     Ok(())
 }
@@ -116,11 +154,13 @@ async fn iterate_children(
 async fn get_category_response(url: &str) -> anyhow::Result<CategoryResponse> {
     let body = get_page_content(url).await?;
 
-    let mut file = File::create(
-        Path::new("crawled_data")
-            .join("category")
-            .join("categories.json"),
-    )?;
+    let file_path = Path::new("crawled_data")
+        .join("category")
+        .join("categories.json");
+
+    std::fs::create_dir_all(file_path.parent().unwrap()).unwrap();
+
+    let mut file = File::create(file_path)?;
     file.write(body.as_bytes())?;
 
     let category_response: CategoryResponse = serde_json::from_str(&body)?;
@@ -140,11 +180,13 @@ async fn get_article_content(id: i32) -> anyhow::Result<ArticleResponse> {
     let url = format!("https://www.dnf-universe.com/api/v1/story/{}", id);
     let body = get_page_content(&url).await?;
 
-    let mut file = File::create(
-        Path::new("crawled_data")
-            .join("articles")
-            .join(format!("{}.json", id)),
-    )?;
+    let file_path = Path::new("crawled_data")
+        .join("articles")
+        .join(format!("{}.json", id));
+
+    std::fs::create_dir_all(file_path.parent().unwrap()).unwrap();
+
+    let mut file = File::create(file_path)?;
     file.write(body.as_bytes())?;
 
     let article_response: ArticleResponse = serde_json::from_str(&body)?;
