@@ -1,6 +1,7 @@
 use async_recursion::async_recursion;
 use std::{collections::HashMap, fs::File, io::Write, path::Path};
 
+use clap::Parser;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize, Hash, PartialEq, Eq)]
@@ -49,8 +50,8 @@ struct ArticleDataResponse {
     pub status: String,
     pub titles: HashMap<LangEnum, String>,
     pub subtitles: HashMap<LangEnum, String>,
-    pub image_url: String,
-    pub attachments: HashMap<String, Vec<ArticleAattachment>>,
+    pub image_url: Option<String>,
+    pub attachments: HashMap<LangEnum, Vec<ArticleAattachment>>,
     pub contents: HashMap<LangEnum, String>,
 }
 
@@ -67,6 +68,12 @@ struct ArticleAattachment {
     pub status: String,
 }
 
+#[derive(Parser, Debug)]
+struct Arguments {
+    #[arg(short, long, default_value = "true")]
+    use_local: bool,
+}
+
 async fn read_from_web() -> anyhow::Result<(Vec<String>, Vec<ArticleDataResponse>)> {
     let categories_url = "https://static.dnf-universe.com/categories.json";
     let categories = get_category_response(categories_url).await.unwrap();
@@ -77,6 +84,27 @@ async fn read_from_web() -> anyhow::Result<(Vec<String>, Vec<ArticleDataResponse
     iterate_children(&categories.data, &mut category_names, &mut ko_articles).await?;
 
     Ok((category_names, ko_articles))
+}
+
+async fn read_from_local() -> anyhow::Result<(Vec<String>, Vec<ArticleDataResponse>)> {
+    let category_names = std::fs::read_to_string("crawled_data/category/categories.json")?;
+    let ko_articles_path = Path::new("crawled_data").join("articles");
+
+    let ko_articles = std::fs::read_dir(ko_articles_path)?
+        .map(|entry| {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            let file = File::open(path).unwrap();
+
+            let article: ArticleResponse = serde_json::from_reader(file).unwrap();
+            article.data
+        })
+        .collect::<Vec<_>>();
+
+    Ok((
+        category_names.lines().map(|s| s.to_string()).collect(),
+        ko_articles,
+    ))
 }
 
 async fn post_process(
@@ -112,7 +140,14 @@ async fn post_process(
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let (category_names, ko_articles) = read_from_web().await?;
+    let args = Arguments::parse();
+
+    let (category_names, ko_articles) = if args.use_local {
+        read_from_local().await?
+    } else {
+        read_from_web().await?
+    };
+
     post_process(&ko_articles, &category_names).await?;
 
     Ok(())
