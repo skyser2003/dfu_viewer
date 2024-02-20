@@ -88,6 +88,7 @@ async fn read_from_web() -> anyhow::Result<(Vec<String>, Vec<ArticleDataResponse
 
 async fn read_from_local() -> anyhow::Result<(Vec<String>, Vec<ArticleDataResponse>)> {
     let category_names = std::fs::read_to_string("crawled_data/category/categories.json")?;
+    let category_response: CategoryResponse = serde_json::from_str(&category_names)?;
     let ko_articles_path = Path::new("crawled_data").join("articles");
 
     let ko_articles = std::fs::read_dir(ko_articles_path)?
@@ -102,7 +103,11 @@ async fn read_from_local() -> anyhow::Result<(Vec<String>, Vec<ArticleDataRespon
         .collect::<Vec<_>>();
 
     Ok((
-        category_names.lines().map(|s| s.to_string()).collect(),
+        category_response
+            .data
+            .iter()
+            .map(|child| child.titles[&LangEnum::KR].clone())
+            .collect(),
         ko_articles,
     ))
 }
@@ -110,17 +115,28 @@ async fn read_from_local() -> anyhow::Result<(Vec<String>, Vec<ArticleDataRespon
 async fn post_process(
     ko_articles: &Vec<ArticleDataResponse>,
     category_names: &Vec<String>,
+    exclude_categories: &Vec<String>,
 ) -> anyhow::Result<()> {
     // Post processing
     let ko_articles_body = ko_articles
         .iter()
-        .map(|article| {
-            format!(
-                "[{}] - [{}]",
-                article.titles[&LangEnum::KR],
-                article.contents[&LangEnum::KR]
-            )
+        .filter_map(|article| {
+            if exclude_categories.contains(&article.category_titles[&LangEnum::KR]) {
+                None
+            } else {
+                Some(format!(
+                    "```[{}]```\\\n{}\n\n\n\n",
+                    article.titles[&LangEnum::KR],
+                    article.contents[&LangEnum::KR]
+                ))
+            }
         })
+        .collect::<Vec<_>>();
+
+    let category_names = category_names
+        .into_iter()
+        .filter(|name| !exclude_categories.contains(name))
+        .map(|name| name.clone())
         .collect::<Vec<_>>();
 
     let category_names_body = category_names.join("\n");
@@ -130,7 +146,7 @@ async fn post_process(
     std::fs::create_dir_all(final_dir.clone()).unwrap();
 
     let mut category_names_file = File::create(final_dir.join("category_names.txt"))?;
-    let mut all_articles_file = File::create(final_dir.join("all_articles.txt"))?;
+    let mut all_articles_file = File::create(final_dir.join("all_articles.md"))?;
 
     category_names_file.write(category_names_body.as_bytes())?;
     all_articles_file.write(ko_articles_body.as_bytes())?;
@@ -148,7 +164,12 @@ async fn main() -> anyhow::Result<()> {
         read_from_web().await?
     };
 
-    post_process(&ko_articles, &category_names).await?;
+    let exclude_categories = vec!["명예의 전당", "스페셜", "아트던展"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+
+    post_process(&ko_articles, &category_names, &exclude_categories).await?;
 
     Ok(())
 }
